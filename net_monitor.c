@@ -7,7 +7,8 @@
 #include <sys/time.h>
 #include <string.h>
 
-#define CHECK_INTERVAL 5
+#define CHECK_INTERVAL 5      // Check every 5 seconds
+#define RETRY_COUNT 4         // Number of retries before considering it down
 #define NOTIFY_DOWN "notify-send -a system -i network-wireless-disconnected -r 2003 'net_monitor' 'Internet connection is down!'"
 #define NOTIFY_UP "notify-send -a system -i network-wireless-connected -r 2003 'net_monitor' 'Internet connection restored'"
 #define DNS_SERVER "8.8.8.8"
@@ -30,32 +31,37 @@ unsigned char dns_query[] = {
 int verbose = 0;
 
 int check_internet() {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) return 0;
+    for (int i = 0; i < RETRY_COUNT; i++) {
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock < 0) return 0;
 
-    struct sockaddr_in server;
-    memset(&server, 0, sizeof(server));
-    server.sin_family = AF_INET;
-    server.sin_port = htons(DNS_PORT);
-    inet_pton(AF_INET, DNS_SERVER, &server.sin_addr);
+        struct sockaddr_in server;
+        memset(&server, 0, sizeof(server));
+        server.sin_family = AF_INET;
+        server.sin_port = htons(DNS_PORT);
+        inet_pton(AF_INET, DNS_SERVER, &server.sin_addr);
 
-    // Set a timeout for receiving data
-    struct timeval timeout = {2, 0};  // 2 seconds
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        // Set a timeout for receiving data
+        struct timeval timeout = {2, 0};  // 2 seconds
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
-    // Send a real DNS query
-    int sent = sendto(sock, dns_query, sizeof(dns_query), 0, (struct sockaddr*)&server, sizeof(server));
-    if (sent < 0) {
+        // Send a real DNS query
+        int sent = sendto(sock, dns_query, sizeof(dns_query), 0, (struct sockaddr*)&server, sizeof(server));
+        if (sent < 0) {
+            close(sock);
+            continue;  // Retry if sending fails
+        }
+
+        char buffer[512];
+        socklen_t len = sizeof(server);
+        int received = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&server, &len);
+
         close(sock);
-        return 0;
+        if (received > 0) return 1;  // If we received a response, the internet is up
+
+        sleep(1);  // Small delay before retrying
     }
-
-    char buffer[512];
-    socklen_t len = sizeof(server);
-    int received = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*)&server, &len);
-
-    close(sock);
-    return received > 0;  // If we received a response, internet is up
+    return 0;  // If all retries fail, internet is down
 }
 
 int main(int argc, char *argv[]) {
